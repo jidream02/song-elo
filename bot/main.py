@@ -8,7 +8,7 @@ from aiogram.types import BotCommand
 
 from bot.config import get_settings
 from bot.handlers import battle, compare, rate, start, top
-from bot.middlewares import DbSessionMiddleware
+from bot.middlewares import DbSessionMiddleware, WakeUpMiddleware
 from db.session import make_engine, make_sessionmaker
 from services.llm_rater import GeminiRater, LLMRater
 from services.rate_limit import SlidingWindowLimiter
@@ -53,6 +53,8 @@ async def main() -> None:
         llm_limiter=SlidingWindowLimiter(settings.rates_per_minute, 60),
     )
     dp.update.middleware(DbSessionMiddleware(make_sessionmaker(engine)))
+    # outer — срабатывает даже на сообщения без команды
+    dp.message.outer_middleware(WakeUpMiddleware())
     dp.include_routers(start.router, rate.router, battle.router, top.router, compare.router)
 
     await bot.set_my_commands(COMMANDS)
