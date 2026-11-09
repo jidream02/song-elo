@@ -109,3 +109,16 @@ def test_garbage_rejected(text):
 def test_criteria_wrong_type_rejected():
     with pytest.raises(LLMParseError):
         parse_llm_response(make(criteria="all good"))
+
+
+def test_known_false_means_unknown_even_with_scores():
+    r = parse_llm_response(make(known=False, confidence=0.5))
+    assert r.criteria is None and r.elo is None and r.confidence <= 0.2
+
+
+def test_known_true_keeps_scores():
+    assert parse_llm_response(make(known=True)).elo == 1780
+
+
+def test_trailing_garbage_after_json():
+    assert parse_llm_response(make() + "\n}\n{\"note\": 1}").elo == 1780

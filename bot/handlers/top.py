@@ -4,6 +4,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.texts import top_line
+from services.elo import PROVISIONAL_MATCHES
 from services.songs import top_songs, user_top
 
 router = Router(name="top")
@@ -11,13 +12,23 @@ router = Router(name="top")
 
 @router.message(Command("top"))
 async def cmd_top(message: Message, session: AsyncSession) -> None:
-    songs = await top_songs(session, 20)
-    if not songs:
+    proven = await top_songs(session, 20, proven=True)
+    pending = await top_songs(session, 10, proven=False)
+    if not proven and not pending:
         await message.answer("Пока пусто. Оцени пару песен через /rate.")
         return
-    lines = ["🏆 <b>Топ-20 песен</b>\n"]
-    lines += [top_line(i, s, s.rating, s.matches) for i, s in enumerate(songs, 1)]
-    lines.append("\n<i>(пред.)</i> — меньше 10 баттлов, рейтинг ещё уточняется.")
+    lines = [f"🏆 <b>Проверено людьми</b> — {PROVISIONAL_MATCHES}+ баттлов\n"]
+    if proven:
+        lines += [top_line(i, s, s.rating, s.matches) for i, s in enumerate(proven, 1)]
+    else:
+        lines.append(f"<i>Пока ни одна песня не набрала {PROVISIONAL_MATCHES} баттлов — играйте в /battle!</i>")
+    if pending:
+        lines.append(f"\n🤖 <b>Мнение ИИ</b> — пока меньше {PROVISIONAL_MATCHES} баттлов, рейтинг уточняется\n")
+        lines += [
+            f"{top_line(i, s, s.rating, s.matches, medals=False, mark_provisional=False)}"
+            f" · {s.matches}/{PROVISIONAL_MATCHES}"
+            for i, s in enumerate(pending, 1)
+        ]
     await message.answer("\n".join(lines))
 
 

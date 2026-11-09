@@ -26,6 +26,18 @@ def song_title(song: Song) -> str:
     return f"<b>{escape(song.artist)} — {escape(song.title)}</b>{year}"
 
 
+def model_name(model_id: str) -> str:
+    """gemini-3.5-flash-lite → Gemini 3.5 Flash-Lite"""
+    parts = model_id.split("-")
+    out = parts[0].capitalize()
+    rest = parts[1:]
+    if rest and rest[0][:1].isdigit():
+        out += " " + rest.pop(0)
+    if rest:
+        out += " " + "-".join(p.capitalize() for p in rest)
+    return out
+
+
 def _bar(score: int) -> str:
     return "█" * score + "░" * (10 - score)
 
@@ -76,9 +88,14 @@ def rating_card(r: SongRating) -> str:
             score = llm.criteria.get(key)
             if score is None:
                 lines.append(f"<code>{'·' * 10}</code> —  {label} (не применимо)")
-            else:
-                lines.append(f"<code>{_bar(score)}</code> {score}/10 {label}")
-        lines.append(f"Уверенность модели: {round(llm.confidence * 100)}%")
+                continue
+            lines.append(f"<code>{_bar(score)}</code> {score}/10 <b>{label}</b>")
+            why = (llm.analysis or {}).get(key)
+            if why:
+                lines.append(f"<i>{escape(why)}</i>")
+        model = llm.model or s.llm_model
+        who = f" · оценил {escape(model_name(model))}" if model else ""
+        lines.append(f"\nУверенность модели: {round(llm.confidence * 100)}%{who}")
         if llm.strengths:
             lines.append("\n<b>👍 Сильные стороны:</b>")
             lines += [f"• {escape(x)}" for x in llm.strengths]
@@ -95,7 +112,7 @@ def battle_text(a: Song, b: Song) -> str:
     return f"⚔️ <b>Какая песня лучше?</b>\n\n🅰 {song_title(a)}\n\n🅱 {song_title(b)}"
 
 
-def top_line(i: int, song: Song, rating: float, matches: int) -> str:
-    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-    mark = " <i>(пред.)</i>" if is_provisional(matches) else ""
+def top_line(i: int, song: Song, rating: float, matches: int, medals: bool = True, mark_provisional: bool = True) -> str:
+    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.") if medals else f"{i}."
+    mark = " <i>(пред.)</i>" if mark_provisional and is_provisional(matches) else ""
     return f"{medal} <b>{round(rating)}</b> — {escape(song.artist)} — {escape(song.title)}{mark}"

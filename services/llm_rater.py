@@ -1,4 +1,4 @@
-"""Стартовая оценка песни через Claude API + строгий парсинг JSON-ответа."""
+"""Стартовая оценка песни через LLM (Gemini / Claude) + строгий парсинг JSON-ответа."""
 
 from __future__ import annotations
 
@@ -23,24 +23,40 @@ CRITERIA: dict[str, str] = {
     "legacy": "Культурное влияние и долговечность",
 }
 
-SYSTEM_PROMPT = f"""You are a strict, fair music critic. You rate songs on craft, not popularity.
+SYSTEM_PROMPT = f"""You are an experienced, fair music critic. You rate the craft of a specific recording,
+not its popularity, and you take every song seriously — no lazy, generic verdicts.
 
-Score each criterion from 1 to 10 (5 = an average, competent song):
+Criteria:
 {chr(10).join(f'- "{k}": {v}' for k, v in CRITERIA.items())}
 
-Rules:
-- Judge the song itself. Streams, chart positions and hype are NOT evidence of quality.
-  "legacy" is about lasting influence and how well the song holds up, not raw popularity.
-- Use the full scale. Most songs are 4-7. Reserve 9-10 for genuinely exceptional work.
-- If you do not actually know this specific recording (not just the artist), do NOT guess:
-  set "criteria" to null, "elo" to null, "confidence" below 0.3, and explain in "weaknesses"
-  that you don't know the song.
-- If a criterion genuinely does not apply (e.g. "vocals" for an instrumental piece), set it to null.
+Scale (use it exactly like this):
+1-2 = broken / unlistenable; 3-4 = weak, below average; 5 = average, competent;
+6 = good; 7 = very good; 8 = excellent; 9 = outstanding even within its genre; 10 = all-time landmark.
+Most songs land between 4 and 7. 9-10 must be rare and earned.
+
+How to judge:
+- FIRST think, THEN score. Fill "analysis" before "criteria": one concrete sentence per criterion
+  about THIS recording (a specific musical element, section, sound or choice), then the score that follows from it.
+- Judge a song by the goals of its own genre. Ambient is not penalised for being calm or slow,
+  punk/lo-fi/cloud rap are not penalised for raw production, a pop song is not rewarded just for being catchy.
+- Popularity, streams, charts and memes are NOT quality. "legacy" = lasting artistic influence and how well
+  the song holds up, not how famous it is.
+- NEVER name session musicians, producers, engineers or sampled songs — such details are where critics
+  hallucinate. Describe what is heard instead (instruments, textures, structure, delivery).
+- "strengths"/"weaknesses": 1-3 points each, specific to this recording. Banned: generic phrases that could
+  describe any song ("сильное эмоциональное воздействие", "хороший продакшн").
+- If a criterion genuinely does not apply (e.g. "vocals" for an instrumental), set it to null.
+- FIRST of all, decide "known": do you genuinely know THIS exact recording (you could describe how it actually
+  sounds), not just the artist or a similar-sounding title? Inventing a description of a song you do not know
+  is the worst possible error — far worse than admitting you don't know it.
+  If "known" is false: set "analysis", "criteria" and "elo" to null, "confidence" below 0.3,
+  and say in "weaknesses" that you don't know the song.
 - "confidence" (0-1) = how well you know this exact recording.
-- "elo": your estimate on the scale 1/10 ≈ 800, 5/10 ≈ 1500, 10/10 ≈ 2200.
-- "strengths" and "weaknesses": 1-3 short points each, written in Russian.
-- Reply with ONE JSON object and nothing else, exactly this shape:
-{{"criteria": {{{", ".join(f'"{k}": int | null' for k in CRITERIA)}}}, "elo": int, "strengths": [str], "weaknesses": [str], "confidence": float}}"""
+- "elo": your overall estimate, 1/10 ≈ 800, 5/10 ≈ 1500, 10/10 ≈ 2200.
+- Write "analysis", "strengths" and "weaknesses" in Russian.
+
+Reply with ONE JSON object and nothing else, keys in exactly this order:
+{{"known": bool, "analysis": {{{", ".join(f'"{k}": str' for k in CRITERIA)}}}, "criteria": {{{", ".join(f'"{k}": int | null' for k in CRITERIA)}}}, "elo": int, "strengths": [str], "weaknesses": [str], "confidence": float}}"""
 
 
 MIN_APPLICABLE_CRITERIA = 4
@@ -62,6 +78,7 @@ class LLMRating:
     weaknesses: list[str] = field(default_factory=list)
     confidence: float = 0.0
     model: str | None = None  # какая модель реально ответила (важно при запасной модели)
+    analysis: dict[str, str] | None = None  # разбор по критериям — «почему такой балл»
 
     def is_known(self, min_confidence: float) -> bool:
         return self.criteria is not None and self.confidence >= min_confidence
@@ -74,6 +91,8 @@ class LLMRating:
             "strengths": self.strengths,
             "weaknesses": self.weaknesses,
             "confidence": self.confidence,
+            "analysis": self.analysis,
+            "model": self.model,
         }
 
 
@@ -85,13 +104,13 @@ def _extract_json_object(text: str) -> dict:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Модель могла добавить текст вокруг — берём первый {...} верхнего уровня.
+        # Модель могла добавить текст до или после JSON (или второй объект) —
+        # берём первый целый объект, начиная с первой «{», хвост игнорируем.
         start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end <= start:
+        if start == -1:
             raise LLMParseError("В ответе нет JSON-объекта") from None
         try:
-            data = json.loads(cleaned[start : end + 1])
+            data, _ = json.JSONDecoder().raw_decode(cleaned, start)
         except json.JSONDecodeError as exc:
             raise LLMParseError(f"Невалидный JSON: {exc}") from None
     if not isinstance(data, dict):
@@ -120,6 +139,9 @@ def parse_llm_response(text: str) -> LLMRating:
     confidence = min(max(_as_number(data.get("confidence", 0), "confidence"), 0.0), 1.0)
 
     raw_criteria = data.get("criteria")
+    if data.get("known") is False:  # модель сама сказала «не знаю» — баллы не принимаем
+        raw_criteria = None
+        confidence = min(confidence, 0.2)
     criteria: dict[str, int | None] | None
     if raw_criteria in (None, {}):
         criteria = None
@@ -147,7 +169,13 @@ def parse_llm_response(text: str) -> LLMRating:
         scores = [v for v in criteria.values() if v is not None]
         elo = score_to_elo(sum(scores) / len(scores))
 
+    raw_analysis = data.get("analysis")
+    analysis = None
+    if isinstance(raw_analysis, dict) and criteria is not None:
+        analysis = {k: str(v).strip()[:300] for k, v in raw_analysis.items() if k in CRITERIA and v}
+
     return LLMRating(
+        analysis=analysis,
         criteria=criteria,
         elo=elo,
         model_elo=model_elo,

@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import BattleOffer, Song, User, UserSongRating, Vote
-from services.elo import BASE_RATING, is_provisional, update_ratings
+from services.elo import BASE_RATING, PROVISIONAL_MATCHES, is_provisional, update_ratings
 from services.llm_rater import LLMParseError, LLMRater, LLMRating
 from services.spotify import SpotifyClient, TrackInfo
 
@@ -110,6 +110,8 @@ def _llm_from_song(song: Song) -> LLMRating | None:
         strengths=p.get("strengths") or [],
         weaknesses=p.get("weaknesses") or [],
         confidence=p.get("confidence") or 0.0,
+        analysis=p.get("analysis"),
+        model=p.get("model"),
     )
 
 
@@ -200,12 +202,51 @@ def _today():
     return datetime.now(timezone.utc).date()
 
 
-async def pick_battle(session: AsyncSession, user_id: int, attempts: int = 15) -> BattleOffer | None:
-    """Случайная пара из пула, за которую пользователь сегодня ещё не голосовал."""
-    ids = list((await session.scalars(select(Song.id).where(Song.in_pool.is_(True)))).all())
-    if len(ids) < 2:
-        return None
+NEAREST_OPPONENTS = 5  # соперник — один из N ближайших по рейтингу
+RANDOM_PAIR_CHANCE = 0.2  # иногда полностью случайная пара — чтобы «лиги» тоже встречались
 
+
+def choose_pair(
+    songs: list[tuple[int, float, int]],
+    voted_today: set[tuple[int, int]],
+    rng: random.Random | None = None,
+    attempts: int = 30,
+) -> tuple[int, int] | None:
+    """songs: (id, rating, matches). Первая песня — чем меньше баттлов, тем чаще выпадает
+    (новым песням быстрее нужны голоса людей). Вторая — обычно близкая по рейтингу."""
+    rng = rng or random.Random()
+    if len(songs) < 2:
+        return None
+    weights = [1.0 / (1 + matches) for _, _, matches in songs]
+    for _ in range(attempts):
+        first_id, first_rating, _ = rng.choices(songs, weights=weights)[0]
+        rivals = [
+            (sid, rating)
+            for sid, rating, _ in songs
+            if sid != first_id and _pair(first_id, sid) not in voted_today
+        ]
+        if not rivals:
+            continue
+        if rng.random() >= RANDOM_PAIR_CHANCE:
+            rivals.sort(key=lambda r: abs(r[1] - first_rating))
+            rivals = rivals[:NEAREST_OPPONENTS]
+        second_id = rng.choice(rivals)[0]
+        # случайный порядок, чтобы новая песня не стояла всегда сверху
+        return (first_id, second_id) if rng.random() < 0.5 else (second_id, first_id)
+    # Почти всё перепробовано — перебираем явно.
+    ids = [sid for sid, _, _ in songs]
+    free = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1 :] if _pair(a, b) not in voted_today]
+    return rng.choice(free) if free else None
+
+
+async def pick_battle(session: AsyncSession, user_id: int) -> BattleOffer | None:
+    """Пара из пула, за которую пользователь сегодня ещё не голосовал."""
+    songs = [
+        (sid, rating, matches)
+        for sid, rating, matches in (
+            await session.execute(select(Song.id, Song.rating, Song.matches).where(Song.in_pool.is_(True)))
+        ).all()
+    ]
     voted_today = {
         (low, high)
         for low, high in (
@@ -216,22 +257,10 @@ async def pick_battle(session: AsyncSession, user_id: int, attempts: int = 15) -
             )
         ).all()
     }
-    total_pairs = len(ids) * (len(ids) - 1) // 2
-    if len(voted_today) >= total_pairs:
+    pair = choose_pair(songs, voted_today)
+    if pair is None:
         return None
-
-    for _ in range(attempts):
-        a, b = random.sample(ids, 2)
-        if _pair(a, b) not in voted_today:
-            break
-    else:
-        # Почти всё перепробовано — перебираем явно.
-        free = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1 :] if _pair(a, b) not in voted_today]
-        if not free:
-            return None
-        a, b = random.choice(free)
-
-    offer = BattleOffer(user_id=user_id, song_a_id=a, song_b_id=b, resolved=False)
+    offer = BattleOffer(user_id=user_id, song_a_id=pair[0], song_b_id=pair[1], resolved=False)
     session.add(offer)
     await session.flush()
     return offer
@@ -324,14 +353,15 @@ async def get_offer_songs(session: AsyncSession, offer: BattleOffer) -> tuple[So
 
 # ---------- топы ----------
 
-async def top_songs(session: AsyncSession, limit: int = 20) -> list[Song]:
-    return list(
-        (
-            await session.scalars(
-                select(Song).where(Song.in_pool.is_(True)).order_by(Song.rating.desc()).limit(limit)
-            )
-        ).all()
-    )
+async def top_songs(session: AsyncSession, limit: int = 20, proven: bool | None = None) -> list[Song]:
+    """proven=True — только песни с ≥ 10 баттлами (рейтинг решили люди);
+    proven=False — пока держатся на оценке ИИ; None — все."""
+    q = select(Song).where(Song.in_pool.is_(True))
+    if proven is True:
+        q = q.where(Song.matches >= PROVISIONAL_MATCHES)
+    elif proven is False:
+        q = q.where(Song.matches < PROVISIONAL_MATCHES)
+    return list((await session.scalars(q.order_by(Song.rating.desc()).limit(limit))).all())
 
 
 async def user_top(session: AsyncSession, user_id: int, limit: int = 20) -> list[tuple[Song, UserSongRating]]:

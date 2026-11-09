@@ -13,9 +13,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""  # пусто — ИИ-оценка выключена, рейтинг только из баттлов
     claude_model: str = "claude-sonnet-5-5"
     gemini_api_key: str = ""  # если задан — используется Gemini (бесплатный тариф AI Studio)
-    gemini_model: str = "gemini-3.5-flash"  # умнее, но медленнее и чаще перегружена
-    gemini_fallback_model: str = "gemini-3.5-flash-lite"  # если основная не ответила
-    llm_min_confidence: float = 0.4  # ниже — «не знаю песню», оценку не выдумываем
+    # Lite — основная: ~500 запросов/день, 2–3 с. Flash умнее, но на бесплатном тарифе всего 20/день,
+    # поэтому только запасная (одна шкала для всех песен важнее).
+    gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_fallback_model: str = "gemini-3.5-flash"
+    llm_min_confidence: float = 0.6  # ниже — «не знаю песню», оценку не выдумываем
 
     battles_per_minute: int = 10  # голосов в минуту на пользователя
     rates_per_minute: int = 5  # /rate и /compare (тратят LLM) в минуту
