@@ -39,6 +39,12 @@ How to judge:
   about THIS recording (a specific musical element, section, sound or choice), then the score that follows from it.
 - Judge a song by the goals of its own genre. Ambient is not penalised for being calm or slow,
   punk/lo-fi/cloud rap are not penalised for raw production, a pop song is not rewarded just for being catchy.
+- Reward craft depth: sophisticated harmony, non-trivial structure and development, layered arrangement,
+  real instrumental/vocal technique, lyrical depth. Formulaic or low-effort tracks — type-beat loops,
+  meme/novelty songs, sped-up/reverb edits, karaoke covers, songs built around one gimmick or catchphrase —
+  must not get more than 4-5 for "melody", "production" and "originality", however catchy or viral they are.
+- Simplicity is NOT a flaw by itself: in punk, minimal, lo-fi, folk etc. it can be a deliberate choice.
+  Judge whether the simplicity is executed with intent and skill, or is just lack of effort.
 - Popularity, streams, charts and memes are NOT quality. "legacy" = lasting artistic influence and how well
   the song holds up, not how famous it is.
 - NEVER name session musicians, producers, engineers or sampled songs — such details are where critics
@@ -259,7 +265,7 @@ class GeminiRater:
             json={
                 "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
                 "contents": [{"role": "user", "parts": [{"text": build_user_prompt(track)}]}],
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.3},
+                "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
             },
         )
         if resp.status_code != 200:
