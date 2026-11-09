@@ -127,7 +127,10 @@ def parse_llm_response(text: str) -> LLMRating:
             for k in CRITERIA
         }
         if sum(v is not None for v in criteria.values()) < MIN_APPLICABLE_CRITERIA:
-            raise LLMParseError("Слишком мало применимых критериев")
+            # Модель не знает песню, но вместо criteria=null прислала пустые критерии —
+            # это тот же «не знаю», а не ошибка.
+            criteria = None
+            confidence = min(confidence, 0.2)
     else:
         raise LLMParseError("criteria должен быть объектом или null")
 

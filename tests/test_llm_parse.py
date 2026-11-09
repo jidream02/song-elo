@@ -78,11 +78,18 @@ def test_not_applicable_criterion_excluded_from_average():
     assert r.elo == 1920  # среднее по пяти оставшимся = 8
 
 
-def test_too_many_not_applicable_rejected():
+def test_mostly_empty_criteria_means_unknown():
     crit = {k: None for k in CRITERIA}
     crit["melody"] = 9
-    with pytest.raises(LLMParseError):
-        parse_llm_response(make(criteria=crit))
+    r = parse_llm_response(make(criteria=crit, confidence=0.9))
+    assert r.criteria is None
+    assert r.elo is None
+    assert not r.is_known(0.4)
+
+
+def test_all_null_criteria_means_unknown():
+    r = parse_llm_response(make(criteria={k: None for k in CRITERIA}, elo=None, confidence=0.1))
+    assert r.criteria is None and not r.is_known(0.4)
 
 
 @pytest.mark.parametrize("bad", ["семь", True, [7]])
