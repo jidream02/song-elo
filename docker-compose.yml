@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-songelo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-songelo}
+      POSTGRES_DB: ${POSTGRES_DB:-songelo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      # Внутри compose база доступна по имени сервиса "db"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-songelo}:${POSTGRES_PASSWORD:-songelo}@db:5432/${POSTGRES_DB:-songelo}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
