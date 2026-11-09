@@ -33,7 +33,7 @@ async def main() -> None:
     gemini_key = settings.gemini_api_key.strip()
     claude_key = settings.anthropic_api_key.strip()
     if gemini_key:
-        rater = GeminiRater(gemini_key, settings.gemini_model)
+        rater = GeminiRater(gemini_key, settings.gemini_model, settings.gemini_fallback_model)
     elif claude_key.startswith("sk-ant-"):
         rater = LLMRater(claude_key, settings.claude_model)
     else:

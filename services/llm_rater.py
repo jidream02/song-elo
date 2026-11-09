@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -45,6 +46,9 @@ Rules:
 MIN_APPLICABLE_CRITERIA = 4
 
 
+log = logging.getLogger(__name__)
+
+
 class LLMParseError(ValueError):
     """Модель вернула не то, что мы просили."""
 
@@ -57,6 +61,7 @@ class LLMRating:
     strengths: list[str] = field(default_factory=list)
     weaknesses: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    model: str | None = None  # какая модель реально ответила (важно при запасной модели)
 
     def is_known(self, min_confidence: float) -> bool:
         return self.criteria is not None and self.confidence >= min_confidence
@@ -179,7 +184,7 @@ class LLMRater:
             messages=[{"role": "user", "content": build_user_prompt(track)}],
         )
         text = "".join(block.text for block in message.content if block.type == "text")
-        return parse_llm_response(text)
+        return replace(parse_llm_response(text), model=self._model)
 
     async def close(self) -> None:
         await self._client.close()
@@ -190,18 +195,38 @@ class GeminiRater:
 
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, api_key: str, model: str, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        fallback_model: str | None = None,
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,  # для тестов
+    ) -> None:
         self._key = api_key
         self._model = model
-        self._http = httpx.AsyncClient(timeout=timeout)
+        self._fallback = fallback_model if fallback_model and fallback_model != model else None
+        self._http = httpx.AsyncClient(timeout=timeout, transport=transport)
 
     @property
     def model(self) -> str:
-        return self._model
+        return f"{self._model} → {self._fallback}" if self._fallback else self._model
 
     async def rate(self, track: TrackInfo) -> LLMRating:
+        """Сначала основная модель; при таймауте, перегрузке (503), лимите (429)
+        или кривом ответе — запасная (обычно быстрая lite)."""
+        try:
+            return await self._rate_with(self._model, track)
+        except Exception as exc:
+            if self._fallback is None:
+                raise
+            log.warning("Gemini %s не справилась (%s: %s), пробую %s",
+                        self._model, type(exc).__name__, str(exc)[:120], self._fallback)
+            return await self._rate_with(self._fallback, track)
+
+    async def _rate_with(self, model: str, track: TrackInfo) -> LLMRating:
         resp = await self._http.post(
-            self.URL.format(model=self._model),
+            self.URL.format(model=model),
             headers={"x-goog-api-key": self._key},
             json={
                 "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -218,7 +243,7 @@ class GeminiRater:
             raise LLMParseError(f"Пустой ответ Gemini: {str(data)[:300]}") from None
         # Модели с «размышлениями» могут вернуть служебные части с thought=true — их пропускаем.
         text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        return parse_llm_response(text)
+        return replace(parse_llm_response(text), model=model)
 
     async def close(self) -> None:
         await self._http.aclose()

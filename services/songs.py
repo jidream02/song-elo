@@ -168,7 +168,7 @@ async def ensure_rating(
         song.llm_payload = llm.to_dict()
         song.llm_elo = llm.elo
         song.llm_confidence = llm.confidence
-        song.llm_model = rater.model
+        song.llm_model = llm.model or rater.model
         song.llm_rated_at = datetime.now(timezone.utc)
         song.llm_requested_by = user_id
         if llm.is_known(min_confidence):
