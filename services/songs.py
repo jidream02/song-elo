@@ -7,7 +7,7 @@ import enum
 import logging
 import random
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -73,7 +73,8 @@ class RatingSource(enum.Enum):
     LLM = "llm"  # стартовая оценка LLM (+ возможно немного баттлов)
     UNKNOWN = "unknown"  # LLM не знает песню, баттлов мало
     LLM_ERROR = "llm_error"  # API недоступно / ответ не распарсился
-    NO_LLM = "no_llm"  # ключа Claude нет — рейтинг только из баттлов
+    NO_LLM = "no_llm"  # ключа LLM нет — рейтинг только из баттлов
+    DAILY_LIMIT = "daily_limit"  # человек исчерпал свои ИИ-оценки за сутки
 
 
 @dataclass
@@ -81,6 +82,8 @@ class SongRating:
     song: Song
     source: RatingSource
     llm: LLMRating | None
+    retry_at: datetime | None = None  # для DAILY_LIMIT — когда освободится оценка
+    daily_limit: int | None = None
 
 
 def _track_of(song: Song) -> TrackInfo:
@@ -110,11 +113,36 @@ def _llm_from_song(song: Song) -> LLMRating | None:
     )
 
 
+AI_LIMIT_WINDOW = timedelta(hours=24)
+
+
+async def ai_quota_retry_at(session: AsyncSession, user_id: int, daily_limit: int) -> datetime | None:
+    """None — у человека ещё есть ИИ-оценки за последние 24 часа; иначе — когда освободится следующая."""
+    since = datetime.now(timezone.utc) - AI_LIMIT_WINDOW
+    times = (
+        await session.scalars(
+            select(Song.llm_rated_at)
+            .where(Song.llm_requested_by == user_id, Song.llm_rated_at > since)
+            .order_by(Song.llm_rated_at.desc())
+            .limit(daily_limit)
+        )
+    ).all()
+    if len(times) < daily_limit:
+        return None
+    return times[-1] + AI_LIMIT_WINDOW  # самая старая из последних N выпадет из окна
+
+
 async def ensure_rating(
-    session: AsyncSession, song: Song, rater: LLMRater | None, min_confidence: float
+    session: AsyncSession,
+    song: Song,
+    rater: LLMRater | None,
+    min_confidence: float,
+    user_id: int | None = None,
+    daily_limit: int | None = None,
 ) -> SongRating:
     """Правило /rate: ≥ 10 баттлов → рейтинг баттлов; иначе — стартовая оценка LLM (кэшируется).
-    rater=None — ИИ выключен (нет ключа): песня сразу идёт в баттлы со стартом 1500."""
+    rater=None — ИИ выключен (нет ключа): песня сразу идёт в баттлы со стартом 1500.
+    daily_limit — сколько НОВЫХ ИИ-оценок один человек может запросить за 24 часа."""
     cached = _llm_from_song(song)
     if not is_provisional(song.matches):
         return SongRating(song, RatingSource.BATTLES, cached)
@@ -124,6 +152,10 @@ async def ensure_rating(
         return SongRating(song, RatingSource.NO_LLM, None)
 
     if song.llm_rated_at is None and rater is not None:
+        if user_id is not None and daily_limit:
+            retry_at = await ai_quota_retry_at(session, user_id, daily_limit)
+            if retry_at is not None:
+                return SongRating(song, RatingSource.DAILY_LIMIT, None, retry_at, daily_limit)
         try:
             llm = await rater.rate(_track_of(song))
         except LLMParseError as exc:
@@ -138,6 +170,7 @@ async def ensure_rating(
         song.llm_confidence = llm.confidence
         song.llm_model = rater.model
         song.llm_rated_at = datetime.now(timezone.utc)
+        song.llm_requested_by = user_id
         if llm.is_known(min_confidence):
             # Оценка LLM — только стартовая точка: ставим её, только пока не было баттлов.
             if song.matches == 0 and llm.elo is not None:

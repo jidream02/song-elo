@@ -1,5 +1,6 @@
 """Форматирование ответов (HTML parse mode)."""
 
+from datetime import datetime, timezone
 from html import escape
 
 from db.models import Song
@@ -49,6 +50,14 @@ def rating_card(r: SongRating) -> str:
         lines.append("Выдумывать оценку не буду — отправь её в баттлы, и рейтинг сформируют люди.")
         if s.matches:
             lines.append(f"Сейчас по баттлам: {round(s.rating)} ({s.matches} матчей, пока мало).")
+    elif r.source is RatingSource.DAILY_LIMIT:
+        lines.append("😾 <b>Кот устал оценивать твои новые песни.</b>")
+        wait = ""
+        if r.retry_at is not None:
+            mins = max(1, int((r.retry_at - datetime.now(timezone.utc)).total_seconds() // 60) + 1)
+            wait = f" Следующая оценка через {mins // 60} ч {mins % 60} мин." if mins >= 60 else f" Следующая оценка через {mins} мин."
+        lines.append(f"Лимит — {r.daily_limit} новых песен в сутки на человека.{wait}")
+        lines.append("Песни, которые уже есть в базе, доступны всегда: /top, /battle.")
     elif r.source is RatingSource.NO_LLM:
         lines.append(f"⚔️ <b>Elo: {round(s.rating)}</b> — {s.matches} из {PROVISIONAL_MATCHES} баттлов")
         lines.append("ИИ-оценка выключена, рейтинг формируют только ваши баттлы.")

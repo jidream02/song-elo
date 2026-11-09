@@ -43,7 +43,9 @@ async def cmd_rate(
     if song is None:
         return
 
-    result = await ensure_rating(session, song, rater, settings.llm_min_confidence)
+    result = await ensure_rating(
+        session, song, rater, settings.llm_min_confidence, user.id, settings.ai_ratings_per_day
+    )
     text = rating_card(result)
     kb = None if song.in_pool else to_pool_kb(song.id)
 

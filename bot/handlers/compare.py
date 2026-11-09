@@ -59,8 +59,9 @@ async def cmd_compare(
         await message.answer("Это одна и та же песня 🙂 Шансы 50/50.")
         return
 
-    ra = await ensure_rating(session, a, rater, settings.llm_min_confidence)
-    rb = await ensure_rating(session, b, rater, settings.llm_min_confidence)
+    limit = settings.ai_ratings_per_day
+    ra = await ensure_rating(session, a, rater, settings.llm_min_confidence, user.id, limit)
+    rb = await ensure_rating(session, b, rater, settings.llm_min_confidence, user.id, limit)
     p = win_probability(a.rating, b.rating)
     fav, pf = (a, p) if p >= 0.5 else (b, 1 - p)
 

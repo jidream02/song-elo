@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     battles_per_minute: int = 10  # голосов в минуту на пользователя
     rates_per_minute: int = 5  # /rate и /compare (тратят LLM) в минуту
+    ai_ratings_per_day: int = 30  # новых ИИ-оценок на человека за 24 часа
 
 
 def get_settings() -> Settings:
